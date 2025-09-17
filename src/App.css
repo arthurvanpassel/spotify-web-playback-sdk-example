@@ -115,3 +115,7 @@ body {
 }
 
 img { background: transparent; }
+
+iframe {
+  display: none;
+}

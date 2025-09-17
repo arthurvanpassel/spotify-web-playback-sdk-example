@@ -1,108 +1,132 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from "react";
+import {
+  skipToPrevious,
+  getState,
+  togglePlay,
+  skipToNext,
+  transferPlayback,
+} from "./requests";
 
-const track = {
+const user = {
+  paused: true,
+  active: false,
+  track: {
     name: "",
     album: {
-        images: [
-            { url: "" }
-        ]
+      images: [{ url: "" }],
     },
-    artists: [
-        { name: "" }
-    ]
-}
+    artists: [{ name: "" }],
+  },
+};
 
-function WebPlayback(props) {
+function WebPlayback({ tokens }) {
+  const [users, setUsers] = useState([user, user]);
+  const [deviceId, setDeviceId] = useState("");
 
-    const [is_paused, setPaused] = useState(false);
-    const [is_active, setActive] = useState(false);
-    const [player, setPlayer] = useState(undefined);
-    const [current_track, setTrack] = useState(track);
+  const initializePlayer = (token, playerIndex) => {
+    const player = new window.Spotify.Player({
+      name: `Web Playback SDK ${playerIndex + 1}`,
+      getOAuthToken: (cb) => {
+        cb(token);
+      },
+      volume: 0.5,
+    });
 
-    useEffect(() => {
+    console.log(`Player ${playerIndex + 1} created with token ${token}`);
 
-        const script = document.createElement("script");
-        script.src = "https://sdk.scdn.co/spotify-player.js";
-        script.async = true;
+    player.addListener("ready", ({ device_id }) => {
+      console.log(`Player ${playerIndex + 1} ready with Device ID ${device_id}`);
+      if (playerIndex === 0) initializePlayer(tokens[1], 1);
+      setDeviceId(device_id);
 
-        document.body.appendChild(script);
+      transferPlayback(device_id, token).then(() => {
+        updateState(playerIndex);
+      });
+    });
 
-        window.onSpotifyWebPlaybackSDKReady = () => {
+    player.addListener("not_ready", ({ device_id }) => {
+      console.log("Device ID has gone offline", device_id);
+    });
 
-            const player = new window.Spotify.Player({
-                name: 'Web Playback SDK',
-                getOAuthToken: cb => { cb(props.token); },
-                volume: 0.5
-            });
+    player.connect();
+  };
 
-            setPlayer(player);
+  useEffect(() => {
+    if (tokens.length === 2 && tokens.every((token) => token !== "")) {
+      const script = document.createElement("script");
+      script.src = "https://sdk.scdn.co/spotify-player.js";
+      script.async = true;
 
-            player.addListener('ready', ({ device_id }) => {
-                console.log('Ready with Device ID', device_id);
-            });
+      document.body.appendChild(script);
 
-            player.addListener('not_ready', ({ device_id }) => {
-                console.log('Device ID has gone offline', device_id);
-            });
-
-            player.addListener('player_state_changed', ( state => {
-
-                if (!state) {
-                    return;
-                }
-
-                setTrack(state.track_window.current_track);
-                setPaused(state.paused);
-
-                player.getCurrentState().then( state => { 
-                    (!state)? setActive(false) : setActive(true) 
-                });
-
-            }));
-
-            player.connect();
-
-        };
-    }, []);
-
-    if (!is_active) { 
-        return (
-            <>
-                <div className="container">
-                    <div className="main-wrapper">
-                        <b> Instance not active. Transfer your playback using your Spotify app </b>
-                    </div>
-                </div>
-            </>)
-    } else {
-        return (
-            <>
-                <div className="container">
-                    <div className="main-wrapper">
-
-                        <img src={current_track.album.images[0].url} className="now-playing__cover" alt="" />
-
-                        <div className="now-playing__side">
-                            <div className="now-playing__name">{current_track.name}</div>
-                            <div className="now-playing__artist">{current_track.artists[0].name}</div>
-
-                            <button className="btn-spotify" onClick={() => { player.previousTrack() }} >
-                                &lt;&lt;
-                            </button>
-
-                            <button className="btn-spotify" onClick={() => { player.togglePlay() }} >
-                                { is_paused ? "PLAY" : "PAUSE" }
-                            </button>
-
-                            <button className="btn-spotify" onClick={() => { player.nextTrack() }} >
-                                &gt;&gt;
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </>
-        );
+      window.onSpotifyWebPlaybackSDKReady = () => {
+        initializePlayer(tokens[0], 0);
+      };
     }
+  }, [tokens]);
+
+  const updateState = async (playerIndex) => {
+    const state = await getState(tokens[playerIndex]);
+    console.log("state", state);
+    setUsers((users) => {
+      const newUsers = [...users];
+      newUsers[playerIndex] = { ...newUsers[playerIndex], ...(state ? { paused: !state.is_playing, track: state.item } : {}) };
+      return newUsers;
+    });
+  };
+
+  return (
+    <div className="container">
+      {users.map((user, i) => (
+        <div className="main-wrapper" key={i}>
+          <img
+            src={user.track.album.images[0].url}
+            className="now-playing__cover"
+            alt=""
+            onClick={() => transferPlayback(deviceId, tokens[i])}
+          />
+
+          <div className="now-playing__side">
+            <div className="now-playing__name">{user.track.name}</div>
+            <div className="now-playing__artist">
+              {user.track.artists.map((artist) => artist.name).join(", ")}
+            </div>
+
+            <button
+              className="btn-spotify"
+              onClick={async () => {
+                await skipToPrevious(deviceId, tokens[i]) && updateState(i);
+              }}
+            >
+              &lt;&lt;
+            </button>
+
+            <button
+              className="btn-spotify"
+              onClick={async () => {
+                await togglePlay(deviceId, tokens[i], user.paused) && setUsers((users) => {
+                  const newUsers = [...users];
+                  newUsers[i] = { ...newUsers[i], paused: !newUsers[i].paused };
+                  return newUsers;
+                });
+              }}
+            >
+              {user.paused ? "PLAY" : "PAUSE"}
+            </button>
+
+            <button
+              className="btn-spotify"
+              onClick={async () => {
+                await skipToNext(deviceId, tokens[i]) && updateState(i);
+              }}
+            >
+              &gt;&gt;
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
-export default WebPlayback
+export default WebPlayback;
